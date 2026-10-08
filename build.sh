@@ -31,6 +31,16 @@ USERSPACE="chip-exit chip-power chip-hwtest chip-dt-overlays chip-configs chip-d
 
 USERSPACE_IMAGE_BUILT=
 
+# $1 = deb-src sources file; prints the version `apt-get source linux` resolves.
+debian_linux_version() {
+    local ver
+    ver=$(docker run --rm -v "$PWD/$1:/etc/apt/sources.list.d/build.sources:ro" debian:trixie \
+        sh -c 'apt-get -qq --error-on=any update && apt-get source --print-uris linux' \
+        | sed -n "s/.* linux_\(.*\)\.dsc .*/\1/p")
+    [ -n "$ver" ] || { echo "ERROR: cannot resolve Debian linux source version" >&2; exit 1; }
+    echo "$ver"
+}
+
 # $1 = package dir name under packages/ ; $2 = "kernel" | "userspace"
 build_pkg() {
     local pkg="$1" kind="$2" sha slot overlay
@@ -48,13 +58,19 @@ build_pkg() {
     if [ -d "$overlay" ]; then
         sha="${sha}-$(find "$overlay" -type f -exec sha1sum {} + | sort | sha1sum | cut -c1-12)"
     fi
+    # Kernel: also key on the Debian `linux` source version that `apt-get source`
+    # will fetch through the submodule's own build.sources, so a new Debian or
+    # security upload rebuilds and an unchanged one hits the cache.
+    if [ "$kind" = kernel ]; then
+        sha="${sha}-$(debian_linux_version "packages/$pkg/build.sources")"
+    fi
     slot="$DCACHE/$pkg/$sha"
 
     if ls "$slot"/*.deb >/dev/null 2>&1; then
         echo ">> $pkg @ ${sha:0:12}: cache hit -- not rebuilding"
     else
         echo ">> $pkg @ ${sha:0:12}: building"
-        rm -rf "$DCACHE/$pkg"            # drop this package's stale sha slot(s)
+        rm -rf "${DCACHE:?}/$pkg"         # drop this package's stale sha slot(s)
         mkdir -p "$slot"
         if [ "$kind" = kernel ]; then
             make -C "packages/$pkg"
@@ -107,7 +123,7 @@ build_pkg() {
             # For an overlay package, scrub our injected debian/ + the build tree
             # so the pristine submodule stays clean for `git submodule update`.
             # Single -f keeps nested vendored submodules (they carry a .git).
-            [ -d "$overlay" ] && git -C "packages/$pkg" clean -fdx >/dev/null 2>&1 || true
+            if [ -d "$overlay" ]; then git -C "packages/$pkg" clean -fdx >/dev/null 2>&1 || true; fi
         fi
     fi
 

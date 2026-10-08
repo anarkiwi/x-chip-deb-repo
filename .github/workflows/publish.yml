@@ -6,10 +6,14 @@ name: publish-apt-repo
 # Trigger model: this runs on push to this repo. Bumping a submodule pointer
 # (the only way a package update reaches here) is a commit + push, which kicks
 # the build -- so the package repos themselves do NOT need to dispatch anything.
+# The weekly schedule picks up new Debian/security kernel uploads (build.sh keys
+# the kernel cache on the resolved Debian source version).
 
 on:
   push:
     branches: [ master, main ]
+  schedule:
+    - cron: '17 4 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -29,22 +33,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      # Token for cloning the (private) submodule repos during checkout. The
-      # org-owned app must be installed on every submodule repo; with no
-      # `repositories:` the token covers all repos the app is installed on, so
-      # new packages need no workflow change here.
-      - name: Mint app token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: nextthingco
-
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          token: ${{ steps.app-token.outputs.token }}
 
       # arm/v7 emulation so the shared userspace image can build natively.
       - uses: docker/setup-qemu-action@v3
@@ -64,13 +55,6 @@ jobs:
 
       - name: Build all packages
         run: ./build.sh
-        env:
-          # Serial appended to the kernel package version (linux-build-deb.sh ->
-          # 6.12.86-1.<CHIP_BUILD_ID>). The CI run number is monotonic, so every
-          # rebuild produces an upgradable version. build.sh's `make -C` inherits
-          # this from the env; the Makefile's git-commit-epoch default is only the
-          # local-build fallback.
-          CHIP_BUILD_ID: ${{ github.run_number }}
 
       - name: Install reprepro
         run: sudo apt-get update && sudo apt-get install -y reprepro
@@ -99,9 +83,9 @@ jobs:
           <h1>CHIP apt repo</h1>
           <p>Add the key, then the source:</p>
           <pre>
-          curl -fsSL https://nextthingco.github.io/x-chip-deb-repo/trixie/public.key \
+          curl -fsSL https://anarkiwi.github.io/x-chip-deb-repo/trixie/public.key \
             | sudo tee /usr/share/keyrings/chip.asc >/dev/null
-          echo 'deb [signed-by=/usr/share/keyrings/chip.asc] https://nextthingco.github.io/x-chip-deb-repo/trixie trixie main' \
+          echo 'deb [signed-by=/usr/share/keyrings/chip.asc] https://anarkiwi.github.io/x-chip-deb-repo/trixie trixie main' \
             | sudo tee /etc/apt/sources.list.d/chip.list
           </pre>
           EOF
