@@ -45,10 +45,10 @@ debian_linux_version() {
 # (same key as the dcache slot) from $KERNEL_RELEASES and checks them against its
 # SHA256SUMS asset; returns non-zero (dest emptied) when there is no such release.
 fetch_prebuilt() {
-    local api="https://api.github.com/repos/${KERNEL_RELEASES:-anarkiwi/x-chip-linux-deb}/releases/tags/$1" urls u
-    urls=$(curl -fsSL "$api" 2>/dev/null | jq -r '.assets[].browser_download_url') || return 1
-    grep -q '/SHA256SUMS$' <<<"$urls" || return 1
-    for u in $urls; do curl -fsSL -o "$2/${u##*/}" "$u"; done
+    local api="https://api.github.com/repos/${KERNEL_RELEASES:-anarkiwi/x-chip-linux-deb}/releases/tags/$1" assets name url
+    assets=$(curl -fsSL "$api" 2>/dev/null | jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"') || return 1
+    grep -q '^SHA256SUMS'$'\t' <<<"$assets" || return 1
+    while IFS=$'\t' read -r name url; do curl -fsSL -o "$2/$name" "$url"; done <<<"$assets"
     if ! (cd "$2" && sha256sum -c --strict SHA256SUMS); then
         rm -f "$2"/*
         return 1
