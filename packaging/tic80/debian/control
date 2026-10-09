@@ -17,7 +17,7 @@ Build-Depends: debhelper-compat (= 13),
 # mruby builds with a host ruby + rake, so include them. If the first CI build
 # complains about a missing tool, add it here (this is the file apt-get build-dep
 # reads).
-               ruby,
+               ruby:native,
                rake
 Standards-Version: 4.7.0
 Homepage: https://tic80.com/

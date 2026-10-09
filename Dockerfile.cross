@@ -1,0 +1,16 @@
+# amd64 image that cross-builds the userspace .debs for armhf
+# (dpkg-buildpackage -aarmhf), avoiding user-mode emulation. Per-package
+# Build-Depends are installed for the host architecture via
+# `apt-get build-dep -a armhf` at build time.
+FROM debian:trixie
+
+RUN dpkg --add-architecture armhf \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        crossbuild-essential-armhf \
+        libc6-dev:armhf \
+        libstdc++-14-dev:armhf \
+        debhelper \
+        dpkg-dev \
+        devscripts \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*

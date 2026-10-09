@@ -41,11 +41,12 @@ debian_linux_version() {
     echo "$ver"
 }
 
-# $1 = release tag, $2 = dest dir. Fetches the .debs of a prebuilt kernel release
-# (same key as the dcache slot) from $KERNEL_RELEASES and checks them against its
+# $1 = owner/repo, $2 = release tag, $3 = dest dir. Fetches the .debs of a
+# prebuilt release (tagged with the dcache slot key) and checks them against its
 # SHA256SUMS asset; returns non-zero (dest emptied) when there is no such release.
 fetch_prebuilt() {
-    local api="https://api.github.com/repos/${KERNEL_RELEASES:-anarkiwi/x-chip-linux-deb}/releases/tags/$1" assets name url
+    local api="https://api.github.com/repos/$1/releases/tags/$2" assets name url
+    shift
     assets=$(curl -fsSL "$api" 2>/dev/null | jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"') || return 1
     grep -q '^SHA256SUMS'$'\t' <<<"$assets" || return 1
     while IFS=$'\t' read -r name url; do curl -fsSL -o "$2/$name" "$url"; done <<<"$assets"
@@ -87,8 +88,13 @@ build_pkg() {
         echo ">> $pkg @ ${sha:0:12}: building"
         rm -rf "${DCACHE:?}/$pkg"         # drop this package's stale sha slot(s)
         mkdir -p "$slot"
-        if [ "$kind" = kernel ] && fetch_prebuilt "kernel-$sha" "$slot"; then
-            echo ">> $pkg @ ${sha:0:12}: using prebuilt release kernel-$sha"
+        if [ "$kind" = kernel ]; then
+            prebuilt_repo=${KERNEL_RELEASES:-anarkiwi/x-chip-linux-deb} prebuilt_tag="kernel-$sha"
+        else
+            prebuilt_repo=${PREBUILT_RELEASES:-anarkiwi/x-chip-deb-repo} prebuilt_tag="deb-$pkg-$sha"
+        fi
+        if fetch_prebuilt "$prebuilt_repo" "$prebuilt_tag" "$slot"; then
+            echo ">> $pkg @ ${sha:0:12}: using prebuilt release $prebuilt_repo $prebuilt_tag"
         elif [ "$kind" = kernel ]; then
             make -C "packages/$pkg"
             # publish everything except the heavy debug-symbol packages
@@ -116,24 +122,29 @@ build_pkg() {
             src=$(dirname "$(dirname "$control")")
             out=$(dirname "$src")
 
-            if [ -z "$USERSPACE_IMAGE_BUILT" ]; then
-                docker build --platform linux/arm/v7 -t chip-userspace-armhf -f Dockerfile.userspace .
-                USERSPACE_IMAGE_BUILT=1
+            if [ "${USERSPACE_BUILD:-cross}" = emulated ]; then
+                image=chip-userspace-armhf platform=linux/arm/v7 dockerfile=Dockerfile.userspace
+                build='apt-get build-dep -y ./ && dpkg-buildpackage -b -uc -us'
+            else
+                image=chip-userspace-cross platform=linux/amd64 dockerfile=Dockerfile.cross
+                # shellcheck disable=SC2016 # $(nproc) expands in the container
+                build='apt-get build-dep -y -a armhf -P cross,nocheck ./ && DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" dpkg-buildpackage -aarmhf -Pcross,nocheck -b -uc -us'
             fi
-            docker run --rm --platform linux/arm/v7 \
-                -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            if [ "$USERSPACE_IMAGE_BUILT" != "$image" ]; then
+                docker build --platform "$platform" -t "$image" -f "$dockerfile" .
+                USERSPACE_IMAGE_BUILT=$image
+            fi
+            # -b: build all binaries (arch-dep AND arch:all) -- userspace packages
+            # may be Architecture: all (e.g. chip-power), which -B would skip.
+            # The EXIT trap hands the source dir + artifacts back to the host
+            # user even when the build fails.
+            docker run --rm --platform "$platform" \
+                -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e BUILD="$build" \
                 -v "$PWD:/work" -w "/work/$src" \
-                chip-userspace-armhf bash -euxc '
+                "$image" bash -euxc '
+                    trap '"'"'chown -R "$HOST_UID:$HOST_GID" . ; chown "$HOST_UID:$HOST_GID" ../*.deb ../*.buildinfo ../*.changes 2>/dev/null || true'"'"' EXIT
                     apt-get update
-                    apt-get build-dep -y ./
-                    # -b: build all binaries (arch-dep AND arch:all) -- userspace
-                    # packages may be Architecture: all (e.g. chip-power), which
-                    # -B would skip.
-                    dpkg-buildpackage -b -uc -us
-                    # hand back just the source dir + the artifacts in its parent
-                    # (avoid recursively chowning all of packages/).
-                    chown -R "$HOST_UID:$HOST_GID" .
-                    chown "$HOST_UID:$HOST_GID" ../*.deb ../*.buildinfo ../*.changes 2>/dev/null || true
+                    eval "$BUILD"
                 '
             for f in "$out"/*.deb; do cp "$f" "$slot/"; done
             rm -f "$out"/*.deb "$out"/*.buildinfo "$out"/*.changes "$out"/*.dsc "$out"/*.tar.* 2>/dev/null || true
