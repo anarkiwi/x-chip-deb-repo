@@ -41,6 +41,21 @@ debian_linux_version() {
     echo "$ver"
 }
 
+# $1 = release tag, $2 = dest dir. Fetches the .debs of a prebuilt kernel release
+# (same key as the dcache slot) from $KERNEL_RELEASES and checks them against its
+# SHA256SUMS asset; returns non-zero (dest emptied) when there is no such release.
+fetch_prebuilt() {
+    local api="https://api.github.com/repos/${KERNEL_RELEASES:-anarkiwi/x-chip-linux-deb}/releases/tags/$1" urls u
+    urls=$(curl -fsSL "$api" 2>/dev/null | jq -r '.assets[].browser_download_url') || return 1
+    grep -q '/SHA256SUMS$' <<<"$urls" || return 1
+    for u in $urls; do curl -fsSL -o "$2/${u##*/}" "$u"; done
+    if ! (cd "$2" && sha256sum -c --strict SHA256SUMS); then
+        rm -f "$2"/*
+        return 1
+    fi
+    rm -f "$2/SHA256SUMS"
+}
+
 # $1 = package dir name under packages/ ; $2 = "kernel" | "userspace"
 build_pkg() {
     local pkg="$1" kind="$2" sha slot overlay
@@ -72,7 +87,9 @@ build_pkg() {
         echo ">> $pkg @ ${sha:0:12}: building"
         rm -rf "${DCACHE:?}/$pkg"         # drop this package's stale sha slot(s)
         mkdir -p "$slot"
-        if [ "$kind" = kernel ]; then
+        if [ "$kind" = kernel ] && fetch_prebuilt "kernel-$sha" "$slot"; then
+            echo ">> $pkg @ ${sha:0:12}: using prebuilt release kernel-$sha"
+        elif [ "$kind" = kernel ]; then
             make -C "packages/$pkg"
             # publish everything except the heavy debug-symbol packages
             for f in "packages/$pkg"/build/*.deb; do
